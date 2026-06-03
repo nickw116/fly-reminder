@@ -1,0 +1,8 @@
+build/
+dist/
+__pycache__/
+*.pyc
+cpython-windows.tar.gz
+python/
+wine-python/
+*.spec
