@@ -25,11 +25,7 @@ from tkinter import ttk, messagebox
 
 # ---------- 版本号 ----------
 APP_VERSION = "1.1.0"
-# 版本检测地址，支持两种方式：
-# 1. GitHub Releases: "https://api.github.com/repos/USERNAME/REPO/releases/latest"
-# 2. 自托管 JSON: "https://your-server.com/version.json"  (需包含 tag_name, assets, body 字段)
-# 留空则跳过版本检测
-VERSION_CHECK_URL = ""
+VERSION_CHECK_URL = "https://api.github.com/repos/nickw116/fly-reminder/releases/latest"
 
 # ---------- 平台检测 ----------
 IS_WINDOWS = sys.platform == "win32"
