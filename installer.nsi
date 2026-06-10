@@ -3,9 +3,9 @@
 
 Unicode true
 !define PRODUCT_NAME "飞机提醒"
-!define PRODUCT_VERSION "1.4.1"
+!define PRODUCT_VERSION "1.5.0"
 !define PRODUCT_PUBLISHER "FlyReminder"
-!define PRODUCT_EXE "FlyReminder.exe"
+!define PRODUCT_EXE "飞机提醒.exe"
 !define PRODUCT_ICON "app_icon.ico"
 
 Name "${PRODUCT_NAME} ${PRODUCT_VERSION}"
@@ -35,7 +35,7 @@ Section "安装"
   SetOutPath $INSTDIR
 
   ; 写入文件
-  File "build\FlyReminder.exe"
+  File "dist\飞机提醒.exe"
   File "app_icon.ico"
 
   ; 创建快捷方式

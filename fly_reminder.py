@@ -24,7 +24,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 # ---------- 版本号 ----------
-APP_VERSION = "1.4.1"
+APP_VERSION = "1.5.0"
 VERSION_CHECK_URL = "https://api.github.com/repos/nickw116/fly-reminder/releases/latest"
 
 # ---------- 平台检测 ----------
