@@ -24,11 +24,52 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 # ---------- 版本号 ----------
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.4.1"
 VERSION_CHECK_URL = "https://api.github.com/repos/nickw116/fly-reminder/releases/latest"
 
 # ---------- 平台检测 ----------
 IS_WINDOWS = sys.platform == "win32"
+
+# ---------- 系统托盘 (Windows) ----------
+if IS_WINDOWS:
+    import ctypes
+    import ctypes.wintypes
+
+    _WM_TRAYICON = 0x0400 + 99  # WM_USER + 99
+
+    _WNDPROC = ctypes.WINFUNCTYPE(
+        ctypes.c_long, ctypes.wintypes.HWND, ctypes.c_uint,
+        ctypes.wintypes.WPARAM, ctypes.wintypes.LPARAM,
+    )
+
+    class _NOTIFYICONDATA(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", ctypes.wintypes.DWORD),
+            ("hWnd", ctypes.wintypes.HWND),
+            ("uID", ctypes.wintypes.UINT),
+            ("uFlags", ctypes.wintypes.UINT),
+            ("uCallbackMessage", ctypes.wintypes.UINT),
+            ("hIcon", ctypes.wintypes.HICON),
+            ("szTip", ctypes.c_wchar * 128),
+            ("dwState", ctypes.wintypes.DWORD),
+            ("dwStateMask", ctypes.wintypes.DWORD),
+            ("szInfo", ctypes.c_wchar * 256),
+            ("uTimeout", ctypes.wintypes.UINT),
+            ("szInfoTitle", ctypes.c_wchar * 64),
+            ("dwInfoFlags", ctypes.wintypes.DWORD),
+        ]
+
+    # 64 位系统上必须设置 restype，否则句柄被截断为 32 位
+    ctypes.windll.user32.LoadImageW.restype = ctypes.wintypes.HANDLE
+    ctypes.windll.user32.LoadImageW.argtypes = [
+        ctypes.wintypes.HINSTANCE, ctypes.c_wchar_p,
+        ctypes.c_uint, ctypes.c_int, ctypes.c_int, ctypes.c_uint,
+    ]
+    ctypes.windll.user32.LoadIconW.restype = ctypes.wintypes.HICON
+    ctypes.windll.user32.LoadIconW.argtypes = [ctypes.wintypes.HINSTANCE, ctypes.c_wchar_p]
+    ctypes.windll.user32.SetWindowLongPtrW.restype = ctypes.c_void_p
+    ctypes.windll.user32.CallWindowProcW.restype = ctypes.c_long
+    ctypes.windll.shell32.Shell_NotifyIconW.restype = ctypes.wintypes.BOOL
 
 # ---------- 飞机多边形顶点 ----------
 PLANE_BODY = [(0, 0), (30, -3), (35, -3), (38, -1), (38, 1), (35, 3), (30, 3), (0, 0)]
@@ -60,6 +101,16 @@ class Updater:
     def __init__(self, root):
         self.root = root
         self._latest = None
+        self._log_path = DATA_DIR / "update.log"
+
+    def _log(self, msg):
+        try:
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            with open(self._log_path, "a", encoding="utf-8") as f:
+                f.write(f"[{ts}] {msg}\n")
+        except Exception:
+            pass
 
     def check(self, silent=True):
         """后台检测新版本，silent=True 时不弹窗提示已最新"""
@@ -76,15 +127,24 @@ class Updater:
                 data = json.loads(resp.read().decode())
             raw_tag = data.get("tag_name", "")
             tag = raw_tag.removeprefix("v")
+            self._log(f"远程版本: {tag}, 资产数: {len(data.get('assets', []))}")
             url = ""
             for asset in data.get("assets", []):
-                if asset["name"].endswith(".exe") and "Setup" in asset["name"]:
+                self._log(f"  资产: {asset['name']} -> {asset.get('browser_download_url', 'N/A')}")
+                if asset["name"].endswith(".exe") and "Setup" not in asset["name"]:
                     url = asset["browser_download_url"]
                     break
             if not url:
+                for asset in data.get("assets", []):
+                    if asset["name"].endswith(".exe") and "Setup" in asset["name"]:
+                        url = asset["browser_download_url"]
+                        break
+            if not url:
                 url = data.get("html_url", "")
             self._latest = dict(version=tag, url=url, notes=data.get("body", ""))
+            self._log(f"更新 URL: {url}")
         except Exception as e:
+            self._log(f"检测失败: {e}")
             if not silent:
                 self.root.after(0, lambda: messagebox.showwarning("检测失败", f"无法检查更新:\n{e}"))
             return
@@ -114,7 +174,7 @@ class Updater:
         win.configure(bg=C["bg"])
         win.resizable(False, False)
         win.grab_set()
-        self._center(win, 400, 240)
+        self._center(win, 400, 320)
 
         tk.Label(win, text="✈ 发现新版本!", font=("Microsoft YaHei UI", 16, "bold"),
                  fg=C["accent"], bg=C["bg"]).pack(pady=(20, 4))
@@ -158,38 +218,81 @@ class Updater:
         def download():
             try:
                 tmp_dir = tempfile.mkdtemp()
-                fname = os.path.join(tmp_dir, "fly-reminder-update.exe")
+                fname = os.path.join(tmp_dir, "FlyReminder_update.exe")
+                self._log(f"开始下载: {url}")
+                self._log(f"保存到: {fname}")
                 req = urllib.request.Request(url, headers={"User-Agent": "FlyReminder"})
-                with urllib.request.urlopen(req, timeout=60) as resp:
+                with urllib.request.urlopen(req, timeout=120) as resp:
                     total = int(resp.headers.get("Content-Length", 0))
                     done = 0
-                    sha = hashlib.sha256()
                     with open(fname, "wb") as f:
                         while True:
                             chunk = resp.read(8192)
                             if not chunk:
                                 break
                             f.write(chunk)
-                            sha.update(chunk)
                             done += len(chunk)
                             if total and total > 0:
                                 pw.after(0, lambda d=done, t=total: progress.configure(value=d * 100 / t))
 
-                # 校验下载完整性（比对文件大小）
                 if total and done != total:
                     raise Exception(f"下载不完整: {done}/{total} bytes")
 
+                # 验证下载的文件是有效的 PE 可执行文件
+                with open(fname, "rb") as f:
+                    magic = f.read(2)
+                if magic != b"MZ":
+                    raise Exception("下载的文件不是有效的可执行文件")
+
+                self._log(f"下载完成: {done} bytes")
                 pw.after(0, lambda: pw.destroy())
-                # 运行安装包，之后清理临时文件
-                if IS_WINDOWS:
-                    os.startfile(fname)
+
+                current_exe = sys.executable if getattr(sys, "frozen", False) else None
+                self._log(f"当前 exe: {current_exe}, IS_WINDOWS={IS_WINDOWS}")
+                if current_exe and IS_WINDOWS:
+                    # 自动替换 exe 并重启
+                    # bat 文件放在 tmp_dir 外，这样 bat 可以安全删除 tmp_dir
+                    bat = os.path.join(tempfile.gettempdir(), "_fly_update.bat")
+                    import ctypes
+                    short_exe = current_exe
+                    try:
+                        buf_len = ctypes.windll.kernel32.GetShortPathNameW(current_exe, None, 0)
+                        if buf_len > 0:
+                            buf = ctypes.create_unicode_buffer(buf_len)
+                            ctypes.windll.kernel32.GetShortPathNameW(current_exe, buf, buf_len)
+                            short_exe = buf.value
+                    except Exception:
+                        pass
+
+                    exe_name = os.path.basename(sys.executable)
+                    with open(bat, "w", encoding="gbk") as f:
+                        f.write("@echo off\n")
+                        f.write("ping 127.0.0.1 -n 3 >nul\n")
+                        f.write(f'taskkill /f /im "{exe_name}" >nul 2>&1\n')
+                        f.write("ping 127.0.0.1 -n 3 >nul\n")
+                        f.write("set RETRY=0\n")
+                        f.write(":copy_retry\n")
+                        f.write(f'copy /y "{fname}" "{short_exe}"\n')
+                        f.write("if errorlevel 1 (\n")
+                        f.write("  set /a RETRY+=1\n")
+                        f.write("  if %RETRY% LSS 5 (\n")
+                        f.write("    ping 127.0.0.1 -n 2 >nul\n")
+                        f.write("    goto copy_retry\n")
+                        f.write("  )\n")
+                        f.write(")\n")
+                        f.write(f'start "" "{short_exe}"\n')
+                        f.write(f'rd /s /q "{tmp_dir}"\n')
+                        f.write(f'del "%~f0"\n')
+                    self._log(f"启动更新脚本: {bat}")
+                    subprocess.Popen([bat], creationflags=0x08000000, shell=True)
+                    self.root.after(500, self.root.destroy)
                 else:
-                    subprocess.Popen([fname])
-                # 延迟清理临时目录（给安装程序足够启动时间）
-                self.root.after(30000, lambda: shutil.rmtree(tmp_dir, ignore_errors=True))
-                # 退出当前程序
-                self.root.after(500, self.root.destroy)
+                    if IS_WINDOWS:
+                        os.startfile(fname)
+                    self.root.after(30000, lambda: shutil.rmtree(tmp_dir, ignore_errors=True))
+                    self.root.after(500, self.root.destroy)
             except Exception as e:
+                self._log(f"更新失败: {e}")
                 pw.after(0, lambda: [pw.destroy(), messagebox.showerror("更新失败", str(e))])
 
         threading.Thread(target=download, daemon=True).start()
@@ -213,6 +316,13 @@ class FlyReminder:
         self.root.resizable(False, False)
         self.root.configure(bg=C["bg"])
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # 托盘状态
+        self._tray_active = False
+        self._tray_nid = None
+        self._tray_hwnd = None
+        self._old_wndproc = None
+        self._new_wndproc = None
 
         self.reminders: list[dict] = []
         self._rid = 0
@@ -326,15 +436,19 @@ class FlyReminder:
         self.scroll_frame = tk.Frame(self.list_canvas, bg=C["panel"])
         self.scroll_frame.bind("<Configure>",
                                lambda e: self.list_canvas.configure(scrollregion=self.list_canvas.bbox("all")))
-        self.list_canvas.create_window((0, 0), window=self.scroll_frame, anchor="nw")
+        self.list_canvas.create_window((0, 0), window=self.scroll_frame, anchor="nw", tags=("scrollwin",))
         self.list_canvas.configure(yscrollcommand=sb.set)
         self.list_canvas.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
 
-        self._empty_label = tk.Label(self.list_canvas, text="暂无提醒，添加一个吧 ✈",
+        # 绑定 canvas 宽度变化，自动调整内部 frame 宽度
+        self.list_canvas.bind("<Configure>",
+                              lambda e: self.list_canvas.itemconfigure("scrollwin", width=e.width))
+
+        self._empty_label = tk.Label(self.scroll_frame, text="暂无提醒，添加一个吧 ✈",
                                      font=("Microsoft YaHei UI", 10),
                                      fg=C["dim"], bg=C["panel"])
-        self.list_canvas.create_window(196, 20, window=self._empty_label)
+        self._empty_label.pack(pady=(20, 10))
 
     # ================================================================
     #  版本检测
@@ -379,20 +493,30 @@ class FlyReminder:
         self.reminders.append(r)
         self._refresh_list()
 
-        threading.Thread(target=self._wait_until, args=(r,), daemon=True).start()
+        # 用主线程 after 轮询，不用线程，避免跨线程调用 tkinter 的问题
+        self._schedule_fire(r)
 
-    def _wait_until(self, r):
-        while r["active"] and not self._closing:
-            now = datetime.datetime.now()
-            diff = (r["target"] - now).total_seconds()
-            if diff <= 0:
-                break
-            time.sleep(min(1, diff))
-        if r["active"] and not self._closing:
-            self.root.after(0, self._fire, r)
+    def _schedule_fire(self, r):
+        if not r["active"] or self._closing:
+            return
+        now = datetime.datetime.now()
+        diff = (r["target"] - now).total_seconds()
+        if diff <= 0:
+            self._fire(r)
+            return
+        # 每秒检查一次
+        self.root.after(1000, lambda: self._schedule_fire(r))
 
     def _fire(self, r):
-        self._fly(r["message"])
+        # 托盘中隐藏时，先弹出窗口
+        if self._tray_active:
+            self._show_from_tray()
+        try:
+            self._fly(r["message"])
+        except Exception as e:
+            self.updater._log(f"动画异常: {e}")
+            import traceback
+            traceback.print_exc()
         self.reminders = [x for x in self.reminders if x["id"] != r["id"]]
         self._refresh_list()
         if IS_WINDOWS:
@@ -409,11 +533,17 @@ class FlyReminder:
         for w in self.scroll_frame.winfo_children():
             w.destroy()
 
+        # 让 scroll_frame 宽度跟随 canvas
+        self.list_canvas.update_idletasks()
+        cw = self.list_canvas.winfo_width()
+        if cw > 1:
+            self.list_canvas.itemconfigure("scrollwin", width=cw)
+
         if not self.reminders:
-            self._empty_label = tk.Label(self.list_canvas, text="暂无提醒，添加一个吧 ✈",
+            self._empty_label = tk.Label(self.scroll_frame, text="暂无提醒，添加一个吧 ✈",
                                          font=("Microsoft YaHei UI", 10),
                                          fg=C["dim"], bg=C["panel"])
-            self.list_canvas.create_window(196, 20, window=self._empty_label)
+            self._empty_label.pack(pady=(20, 10))
             if self._list_refresh_id:
                 self.root.after_cancel(self._list_refresh_id)
                 self._list_refresh_id = None
@@ -421,17 +551,31 @@ class FlyReminder:
 
         for r in self.reminders:
             row = tk.Frame(self.scroll_frame, bg=C["card"])
-            row.pack(fill="x", padx=4, pady=2, ipady=4)
+            row.pack(fill="x", padx=4, pady=2)
+
+            # 左侧内容区（消息 + 时间两行）
+            left = tk.Frame(row, bg=C["card"])
+            left.pack(side="left", fill="x", expand=True, padx=(8, 4), pady=6)
+
             tgt = r["target"]
             tgt_str = tgt.strftime("%H:%M:%S")
             now = datetime.datetime.now()
             diff = max(0, int((tgt - now).total_seconds()))
             left_str = f"{diff//3600:02d}:{diff%3600//60:02d}:{diff%60:02d}"
-            tk.Label(row, text=f"✈ {r['message']}   🕐 {tgt_str}   ⏳ {left_str}",
-                     font=("Microsoft YaHei UI", 9), fg=C["text"], bg=C["card"]).pack(side="left", padx=8)
+
+            # 第一行：消息
+            tk.Label(left, text=f"✈ {r['message']}",
+                     font=("Microsoft YaHei UI", 9), fg=C["text"], bg=C["card"],
+                     anchor="w", wraplength=320, justify="left").pack(fill="x")
+            # 第二行：时间 + 倒计时
+            tk.Label(left, text=f"🕐 {tgt_str}   ⏳ 剩余 {left_str}",
+                     font=("Microsoft YaHei UI", 8), fg=C["dim"], bg=C["card"],
+                     anchor="w").pack(fill="x", pady=(2, 0))
+
+            # 右侧取消按钮
             tk.Button(row, text="✕", font=("Arial", 9, "bold"), bg=C["accent"], fg="white",
                       relief="flat", width=3, cursor="hand2",
-                      command=lambda rid=r["id"]: self._cancel(rid)).pack(side="right", padx=4)
+                      command=lambda rid=r["id"]: self._cancel(rid)).pack(side="right", padx=4, pady=6)
 
         if self._list_refresh_id:
             self.root.after_cancel(self._list_refresh_id)
@@ -463,22 +607,21 @@ class FlyReminder:
         cv.pack()
 
         # 飞机参数
-        sc = 3.0
+        sc = 3.5
         base_y = sh // 3
-        start_x = -200
-        end_x = sw + 200
+        start_x = -250
+        end_x = sw + 250
 
         parts = self._draw_plane(cv, start_x, base_y, sc)
         trails = []
 
         # 消息气泡跟随飞机上方
-        bubble_shadow = cv.create_rectangle(0, 0, 0, 0, fill="#00000033", outline="")
-        bubble = cv.create_rectangle(0, 0, 0, 0, fill="white", outline=C["accent"], width=2, smooth=False)
+        bubble = cv.create_rectangle(0, 0, 0, 0, fill="white", outline=C["accent"], width=3)
         bubble_text = cv.create_text(0, 0, text=f"  {message}  ",
-                                     font=("Microsoft YaHei UI", 13, "bold"), fill=C["accent"])
+                                     font=("Microsoft YaHei UI", 18, "bold"), fill=C["accent"])
 
         fc = [0]
-        speed = 9
+        speed = 3
 
         def step():
             x = start_x + fc[0] * speed
@@ -500,12 +643,12 @@ class FlyReminder:
             self._move_plane(cv, parts, x, y, sc)
 
             # 移动气泡到飞机上方
-            bw = max(len(message) * 15 + 30, 120)
-            bh = 36
-            bx_center = x + 55 * sc / 3.5
-            by_center = y - 65
+            bw = max(len(message) * 22 + 40, 180)
+            bh = 50
+            bx_center = x + 60 * sc / 3.5
+            by_center = y - 85
             if by_center < 10:
-                by_center = y + 55
+                by_center = y + 70
             cv.coords(bubble, bx_center - bw // 2, by_center - bh // 2,
                       bx_center + bw // 2, by_center + bh // 2)
             cv.coords(bubble_text, bx_center, by_center)
@@ -515,7 +658,7 @@ class FlyReminder:
             fc[0] += 1
             win.after(16, step)
 
-        win.after(8000, lambda: win.destroy() if win.winfo_exists() else None)
+        win.after(15000, lambda: win.destroy() if win.winfo_exists() else None)
         step()
 
     # ---- 绘制云朵 ----
@@ -563,16 +706,119 @@ class FlyReminder:
         if not IS_WINDOWS:
             return
         try:
-            from ctypes import windll
             hwnd = int(self.root.winfo_id())
-            windll.user32.FlashWindow(hwnd, True)
+            ctypes.windll.user32.FlashWindow(hwnd, True)
         except Exception:
             pass
+        # 托盘气泡通知
+        if self._tray_active and self._tray_nid:
+            try:
+                nid = _NOTIFYICONDATA()
+                nid.cbSize = ctypes.sizeof(_NOTIFYICONDATA)
+                nid.hWnd = self._tray_nid.hWnd
+                nid.uID = self._tray_nid.uID
+                nid.uFlags = 0x10  # NIF_INFO
+                nid.szInfoTitle = "飞机提醒"
+                nid.szInfo = msg[:200] if msg else "时间到！"
+                nid.dwInfoFlags = 0x01  # NIIF_INFO
+                ctypes.windll.shell32.Shell_NotifyIconW(1, nid)  # NIM_MODIFY
+            except Exception:
+                pass
 
     # ================================================================
-    #  生命周期
+    #  系统托盘
     # ================================================================
     def _on_close(self):
+        """关闭按钮 → 最小化到系统托盘"""
+        if IS_WINDOWS:
+            self._hide_to_tray()
+        else:
+            self._quit_app()
+
+    def _hide_to_tray(self):
+        if not self._tray_active:
+            hwnd = self.root.winfo_id()
+            # 加载图标
+            hicon = 0
+            try:
+                if getattr(sys, "frozen", False):
+                    ico = os.path.join(sys._MEIPASS, "app_icon.ico")
+                else:
+                    ico = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_icon.ico")
+                hicon = ctypes.windll.user32.LoadImageW(
+                    None, ico, 1, 16, 16, 0x10 | 0x8000)
+            except Exception:
+                pass
+            if not hicon:
+                hicon = ctypes.windll.user32.LoadIconW(None, 32512)
+
+            nid = _NOTIFYICONDATA()
+            nid.cbSize = ctypes.sizeof(_NOTIFYICONDATA)
+            nid.hWnd = hwnd
+            nid.uID = 1
+            nid.uFlags = 0x01 | 0x02 | 0x04  # NIF_MESSAGE | NIF_ICON | NIF_TIP
+            nid.uCallbackMessage = _WM_TRAYICON
+            nid.hIcon = hicon
+            nid.szTip = "飞机提醒 - 双击显示"
+
+            # 子类化窗口过程以接收托盘消息
+            def _tray_wndproc(hwnd, msg, wparam, lparam):
+                if msg == _WM_TRAYICON:
+                    if lparam == 0x203:  # WM_LBUTTONDBLCLK
+                        self.root.after(0, self._show_from_tray)
+                    elif lparam == 0x205:  # WM_RBUTTONUP
+                        self.root.after(0, self._show_tray_menu)
+                return ctypes.windll.user32.CallWindowProcW(
+                    self._old_wndproc, hwnd, msg, wparam, lparam)
+
+            self._new_wndproc = _WNDPROC(_tray_wndproc)
+            self._old_wndproc = ctypes.windll.user32.SetWindowLongPtrW(
+                hwnd, -4, self._new_wndproc)
+            self._tray_hwnd = hwnd
+            self._tray_nid = nid
+
+            ok = ctypes.windll.shell32.Shell_NotifyIconW(0, nid)  # NIM_ADD
+            if ok:
+                self._tray_active = True
+            else:
+                err = ctypes.get_last_error()
+                self.updater._log(f"托盘创建失败, last error: {err}")
+                messagebox.showwarning("托盘失败", f"无法最小化到系统托盘 (错误码: {err})，程序将直接关闭。")
+                self._quit_app()
+                return
+
+        if self._tray_active:
+            self.root.withdraw()
+
+    def _show_from_tray(self):
+        self.root.deiconify()
+        self.root.lift()
+        self.root.focus_force()
+        self.root.state("normal")
+
+    def _show_tray_menu(self):
+        x = self.root.winfo_pointerx()
+        y = self.root.winfo_pointery()
+        menu = tk.Menu(self.root, tearoff=0, font=("Microsoft YaHei UI", 10))
+        menu.add_command(label="显示主窗口", command=self._show_from_tray)
+        menu.add_separator()
+        menu.add_command(label="退出", command=self._quit_app)
+        try:
+            menu.tk_popup(x, y)
+        finally:
+            menu.grab_release()
+
+    def _quit_app(self):
+        """完全退出：移除托盘图标并销毁窗口"""
+        if self._tray_active and IS_WINDOWS:
+            self._tray_active = False
+            try:
+                ctypes.windll.shell32.Shell_NotifyIconW(2, self._tray_nid)  # NIM_DELETE
+                if self._old_wndproc and self._tray_hwnd:
+                    ctypes.windll.user32.SetWindowLongPtrW(
+                        self._tray_hwnd, -4, self._old_wndproc)
+            except Exception:
+                pass
         self._closing = True
         for r in self.reminders:
             r["active"] = False

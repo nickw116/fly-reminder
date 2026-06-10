@@ -3,9 +3,9 @@
 
 Unicode true
 !define PRODUCT_NAME "飞机提醒"
-!define PRODUCT_VERSION "1.0.0"
+!define PRODUCT_VERSION "1.4.1"
 !define PRODUCT_PUBLISHER "FlyReminder"
-!define PRODUCT_EXE "飞机提醒.exe"
+!define PRODUCT_EXE "FlyReminder.exe"
 !define PRODUCT_ICON "app_icon.ico"
 
 Name "${PRODUCT_NAME} ${PRODUCT_VERSION}"
@@ -24,17 +24,18 @@ RequestExecutionLevel user
 !insertmacro MUI_PAGE_LICENSE "LICENSE.txt"
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
-!insertmacro MUI_LANGUAGE "SimpChinese"
 
 ; 卸载页面
 !insertmacro MUI_UNPAGE_CONFIRM
 !insertmacro MUI_UNPAGE_INSTFILES
 
+!insertmacro MUI_LANGUAGE "SimpChinese"
+
 Section "安装"
   SetOutPath $INSTDIR
 
   ; 写入文件
-  File "dist\${PRODUCT_EXE}"
+  File "build\FlyReminder.exe"
   File "app_icon.ico"
 
   ; 创建快捷方式
